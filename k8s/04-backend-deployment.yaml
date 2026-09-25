@@ -1,0 +1,92 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backend
+  namespace: technozis-voice-agent
+spec:
+  replicas: 2   # Redis-backed session memory means any replica can handle any call
+  selector:
+    matchLabels:
+      app: backend
+  template:
+    metadata:
+      labels:
+        app: backend
+    spec:
+      # VA-C6 fix: kept comfortably above GRACEFUL_SHUTDOWN_DRAIN_SEC
+      # (config.py, default 30s) — that's the soft "try to wait for calls
+      # to finish naturally" budget inside the app; this is the hard
+      # "kubelet sends SIGKILL no matter what" deadline. Without this, k8s'
+      # default 30s grace period raced the app's own drain window and
+      # could SIGKILL mid-drain, right back to the cut-off-mid-call
+      # problem this was meant to fix. Rolling deploys and HPA scale-in
+      # both honor this.
+      # VA-T-011: must exceed SHUTDOWN_TOTAL_BUDGET_SEC (35s default) with
+      # room for the Redis/HTTP client teardown that follows the drains.
+      #
+      # It was 45s against two SEQUENTIAL 30s drains — 60s of shutdown — so the
+      # process was SIGKILLed mid-reconciliation and the teardown never ran at
+      # all, leaking connections on every rolling restart. The drains now run
+      # concurrently under one budget, and config_validation.py compares the
+      # two numbers at startup so a future mismatch is caught on boot rather
+      # than during an incident. Keep PLATFORM_TERMINATION_GRACE_SEC in step
+      # with this value.
+      terminationGracePeriodSeconds: 60
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1001
+        runAsGroup: 1001
+      containers:
+        - name: backend
+          image: technozis/voice-agent-backend:latest   # replace with your ECR/ACR image
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          ports:
+            - containerPort: 8000
+          envFrom:
+            - configMapRef: { name: technozis-config }
+            - secretRef: { name: technozis-secrets }
+          resources:
+            requests: { cpu: "250m", memory: "256Mi" }
+            limits: { cpu: "1", memory: "1Gi" }
+          readinessProbe:
+            httpGet: { path: /ready, port: 8000 }
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /health, port: 8000 }
+            initialDelaySeconds: 15
+            periodSeconds: 20
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: backend
+  namespace: technozis-voice-agent
+spec:
+  selector:
+    app: backend
+  ports:
+    - port: 8000
+      targetPort: 8000
+  type: ClusterIP
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: backend-hpa
+  namespace: technozis-voice-agent
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: backend
+  minReplicas: 2
+  maxReplicas: 10
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target: { type: Utilization, averageUtilization: 65 }

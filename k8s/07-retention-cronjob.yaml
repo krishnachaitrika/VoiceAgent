@@ -1,0 +1,80 @@
+# VA-T-008 — NOTHING WAS SCHEDULED TO ENFORCE RETENTION.
+#
+# scripts/purge_old_data.py exists and works, DATA_RETENTION_DAYS is set, and
+# its own docstring says it is "intended to run on a schedule (e.g. a daily
+# k8s CronJob)" — but no CronJob existed anywhere in k8s/. So call
+# transcripts, caller phone numbers and lead records accumulated forever while
+# every surface implied a retention policy was in force.
+#
+# For a UK-registered company taking calls from identifiable individuals that
+# is not a tidiness problem. A documented retention period that nothing
+# enforces is arguably worse than none at all: it is a stated commitment being
+# silently broken, and it is the first thing an auditor checks.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: data-retention-purge
+  namespace: technozis-voice-agent
+  labels:
+    app: voice-agent
+    component: retention
+spec:
+  # 03:30 UTC daily — outside any plausible call volume, so the deletes are
+  # not competing with live traffic for the same database.
+  schedule: "30 3 * * *"
+
+  # Forbid, not Allow: if yesterday's purge is somehow still running, a second
+  # one must not start alongside it. Two concurrent cascading deletes over the
+  # same rows is how you get lock contention on a live database.
+  concurrencyPolicy: Forbid
+
+  # A missed run (cluster down at 03:30) is picked up within the hour rather
+  # than skipped silently for a day.
+  startingDeadlineSeconds: 3600
+
+  successfulJobsHistoryLimit: 3
+  # Keep more failures than successes — a failed purge is the one you need the
+  # logs for, and it is also the one that means data is being retained past
+  # its policy right now.
+  failedJobsHistoryLimit: 7
+
+  jobTemplate:
+    spec:
+      # Three attempts, then stop and leave the failure visible. Retrying
+      # forever would turn a broken purge into a silent one.
+      backoffLimit: 3
+      # Hard stop after 30 minutes. A purge that cannot finish in that window
+      # is misbehaving, and letting it run indefinitely against production
+      # Postgres is worse than failing the job.
+      activeDeadlineSeconds: 1800
+      template:
+        spec:
+          restartPolicy: Never
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 10001
+          containers:
+            - name: purge
+              image: technozis/voice-agent-backend:latest
+              imagePullPolicy: IfNotPresent
+              command: ["python", "scripts/purge_old_data.py"]
+              # Same config as the backend so DATA_RETENTION_DAYS and
+              # DATABASE_URL cannot drift between the service that writes the
+              # data and the job that deletes it.
+              envFrom:
+                - configMapRef:
+                    name: voice-agent-config
+                - secretRef:
+                    name: voice-agent-secrets
+              resources:
+                requests:
+                  cpu: 50m
+                  memory: 128Mi
+                limits:
+                  cpu: 500m
+                  memory: 512Mi
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop: ["ALL"]

@@ -1,0 +1,81 @@
+# Redis — Session/LLM/RAG cache + Streams event bus for the cluster.
+# A StatefulSet (not a Deployment) because Redis needs a stable network
+# identity + persistent volume for its AOF file across restarts.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: redis
+  namespace: technozis-voice-agent
+spec:
+  serviceName: redis
+  replicas: 1
+  selector:
+    matchLabels:
+      app: redis
+  template:
+    metadata:
+      labels:
+        app: redis
+    spec:
+      # redis:7-alpine's own entrypoint script normally steps down from
+      # root to its built-in "redis" user (uid/gid 999) via gosu — but this
+      # StatefulSet sets `command:` below, which in k8s replaces the
+      # image's ENTRYPOINT entirely, bypassing that step-down. So we pin
+      # runAsUser/runAsGroup to the image's known uid/gid (999) explicitly,
+      # and fsGroup so the /data PVC is writable by that uid on mount.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 999
+        runAsGroup: 999
+        fsGroup: 999
+      containers:
+        - name: redis
+          image: redis:7-alpine
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          ports:
+            - containerPort: 6379
+          env:
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: technozis-secrets, key: REDIS_PASSWORD }
+          # $(REDIS_PASSWORD) is Kubernetes' own env-var substitution for
+          # command/args (not shell expansion) — requires no auth so this
+          # Redis isn't unauthenticated to every pod in the cluster network.
+          command: ["redis-server", "--save", "60", "1", "--appendonly", "yes", "--requirepass", "$(REDIS_PASSWORD)"]
+          resources:
+            requests: { cpu: "100m", memory: "128Mi" }
+            limits: { cpu: "500m", memory: "512Mi" }
+          volumeMounts:
+            - name: redis-data
+              mountPath: /data
+          readinessProbe:
+            # exec probes need a shell to read $REDIS_PASSWORD from the
+            # container's own env — Kubernetes' $(VAR) substitution above
+            # only applies to command/args, not probe exec commands.
+            exec: { command: ["sh", "-c", "redis-cli -a \"$REDIS_PASSWORD\" --no-auth-warning ping"] }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+  volumeClaimTemplates:
+    - metadata:
+        name: redis-data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 2Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis
+  namespace: technozis-voice-agent
+spec:
+  selector:
+    app: redis
+  ports:
+    - port: 6379
+      targetPort: 6379
+  clusterIP: None  # headless — stable DNS for the StatefulSet pod

@@ -1,0 +1,118 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: frontend
+  namespace: technozis-voice-agent
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: frontend
+  template:
+    metadata:
+      labels:
+        app: frontend
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1001
+        runAsGroup: 1001
+      containers:
+        - name: frontend
+          image: technozis/voice-agent-frontend:latest   # replace with your ECR/ACR image
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          ports:
+            - containerPort: 3000
+          readinessProbe:
+            httpGet: { path: /, port: 3000 }
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /, port: 3000 }
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          env:
+            # NEXT_PUBLIC_API_URL removed (VA-C3 fix) — read by no source
+            # file; the frontend only ever talks to the backend through
+            # app/api/[...path]/route.js's BACKEND_INTERNAL_URL below.
+            # Server-side only (app/api/[...path]/route.js) — resolved from
+            # inside the frontend pod via the backend Service's in-cluster
+            # DNS name, not the public api.yourdomain.com ingress host.
+            - name: BACKEND_INTERNAL_URL
+              value: "http://backend:8000"
+            - name: DASHBOARD_ADMIN_KEY
+              valueFrom:
+                secretKeyRef: { name: technozis-secrets, key: DASHBOARD_ADMIN_KEY }
+          resources:
+            requests: { cpu: "100m", memory: "128Mi" }
+            limits: { cpu: "500m", memory: "512Mi" }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: frontend
+  namespace: technozis-voice-agent
+spec:
+  selector:
+    app: frontend
+  ports:
+    - port: 3000
+      targetPort: 3000
+  type: ClusterIP
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: technozis-ingress
+  namespace: technozis-voice-agent
+  annotations:
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts: ["app.yourdomain.com", "api.yourdomain.com"]
+      secretName: technozis-tls
+  rules:
+    - host: app.yourdomain.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service: { name: frontend, port: { number: 3000 } }
+    - host: api.yourdomain.com
+      http:
+        paths:
+          # api.yourdomain.com is scoped to ONLY the two routes Twilio calls
+          # directly and unauthenticated (webhook + media stream) — everything
+          # else (the /api/* dashboard/admin routes, /docs, /openapi.json,
+          # /health) must go through the frontend's own server-side proxy
+          # (frontend/app/api/[...path]/route.js), which attaches the
+          # dashboard credential. Anything else hitting this host now 404s
+          # (no matching ingress rule) instead of reaching the backend.
+          - path: /incoming-call
+            pathType: Exact
+            backend:
+              service: { name: backend, port: { number: 8000 } }
+          # VA-T-001 FIX — pathType MUST be Prefix, not Exact.
+          #
+          # api/twilio_webhook.py builds the media-stream URL as
+          #   wss://<host>/stream/<CallSid>/<expiry>/<token>
+          # because the stream credential travels in the PATH (a query string
+          # was being lost in transit, so no call could connect at all).
+          #
+          # pathType: Exact matches ONLY the literal "/stream", so every one
+          # of those URLs 404s at the ingress and no call connects in
+          # Kubernetes. It works locally, where nothing sits in front of
+          # uvicorn — which is exactly why this survived to a QA round.
+          #
+          # Prefix matches /stream and everything beneath it. It also still
+          # covers the deprecated query-string route, which is scheduled for
+          # deletion once no traffic has hit it for a day.
+          - path: /stream
+            pathType: Prefix
+            backend:
+              service: { name: backend, port: { number: 8000 } }
