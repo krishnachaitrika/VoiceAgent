@@ -1,0 +1,56 @@
+fastapi==0.115.0
+uvicorn[standard]==0.30.6
+python-dotenv==1.0.1
+twilio==9.3.0
+openai==1.51.0
+httpx==0.27.2
+sqlalchemy[asyncio]==2.0.35
+asyncpg==0.29.0
+pgvector==0.3.2
+alembic==1.13.3
+google-api-python-client==2.149.0
+google-auth-httplib2==0.2.0
+google-auth-oauthlib==1.2.1
+pydantic==2.9.2
+pydantic-settings==2.5.2
+python-multipart==0.0.18
+aiofiles==24.1.0
+aiohttp==3.10.5
+
+# ─── v2 — document upload ──────────────────────────────────────────────────
+pypdf==4.3.1
+
+# ─── v3+ enterprise layer ───────────────────────────────────────────────────
+redis==5.0.8              # session cache, LLM cache, RAG cache, Streams event bus
+langgraph==0.2.34          # 4-agent orchestrator (Receptionist/Knowledge/Action/Escalation)
+langchain-core==0.3.9      # langgraph's runtime dependency
+
+# ─── VA-B3 — rate limiting ──────────────────────────────────────────────────
+slowapi==0.1.9
+
+# ─── v4 — streaming voice pipeline (Sarvam WebSocket STT/TTS) ──────────────
+# Official Sarvam SDK — gives us the speech_to_text_streaming /
+# text_to_speech_streaming websocket clients used in voice/stt.py and
+# voice/tts.py (StreamingSTTSession / StreamingTTSSession), instead of
+# hand-rolling the websocket + JSON message framing ourselves.
+# sarvamai -- Sarvam's official SDK, now used ONLY for TTS (voice/tts.py's
+# streaming client + batch Bulbul fallback). STT was fully migrated to
+# ElevenLabs Scribe v2 (voice/stt.py) -- sarvamai is no longer imported there.
+sarvamai==0.1.28
+# websockets -- used directly (no SDK) for ElevenLabs' realtime STT and
+# streaming TTS WebSockets (voice/stt.py, voice/tts.py).
+websockets==13.1
+
+# IANA timezone database. Linux/macOS ship one; WINDOWS DOES NOT, so
+# zoneinfo.ZoneInfo("Asia/Kolkata") raises ZoneInfoNotFoundError there and
+# every book_meeting fails with "No time zone found with key Asia/Kolkata".
+# Harmless everywhere else, so it is not marked platform-specific.
+tzdata==2024.2
+
+# Argon2id password hashing for dashboard accounts (VA-T-002, migration 0005).
+# The OWASP first choice: unlike bcrypt its cost is memory-hard as well as
+# CPU-hard, which is what blunts GPU and ASIC cracking. The hash embeds its
+# own salt and parameters, so raising the cost later does not invalidate
+# existing hashes — they are re-hashed on the owner's next login.
+argon2-cffi==23.1.0
+sentry-sdk==2.18.0

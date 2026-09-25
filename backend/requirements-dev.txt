@@ -1,0 +1,20 @@
+# Test-only dependencies (VA-A1 fix) — never installed in the production
+# image, only in CI and local dev. Install alongside requirements.txt:
+#   pip install -r requirements.txt -r requirements-dev.txt
+#
+# httpx is already a production dependency (requirements.txt) and doubles as
+# the test HTTP client (httpx.AsyncClient against the FastAPI app) — not
+# repeated here.
+pytest==8.3.3
+pytest-asyncio==0.24.0
+pytest-cov==5.0.0
+fakeredis==2.24.1
+testcontainers==4.8.1
+
+# VA-D4 fix — used only by scripts/test_pipeline.py (a manual mic-record
+# dev harness, not part of the app or the automated suite — see
+# pytest.ini's testpaths, which already excludes scripts/ from collection).
+# Previously in requirements.txt, so every production image shipped native
+# audio libraries for the benefit of one local script.
+sounddevice==0.5.0
+numpy==1.26.4
