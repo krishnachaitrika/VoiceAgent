@@ -1,0 +1,20 @@
+cd backend
+python -m venv venv
+venv\Scripts\activate
+pip install -r requirements.txt -r requirements-dev.txt
+python scripts/setup_db.py
+
+python scripts/create_user.py  ------- this for create usernae and password
+
+uvicorn main:app --reload
+
+cd frontend
+npm install
+npm run dev
+
+ngrok http 8000
+
+python scripts\make_test_call.py +916369996595
+
+velu
+Velutechnozis@123

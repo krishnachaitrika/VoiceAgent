@@ -1,0 +1,73 @@
+# Enterprise local stack — Redis + FastAPI backend + Next.js dashboard.
+#
+# Supabase (Postgres+pgvector) stays external/managed (per the architecture
+# plan) — only Redis runs locally here since that's the piece you're
+# self-hosting in Docker. `docker compose up` gives you the full v3+ stack
+# for local dev; swap REDIS_URL for a managed Redis in production and drop
+# the redis service from this file.
+#
+# Usage:
+#   cp .env.example .env   # fill in your keys
+#   docker compose up --build
+
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: technozis-redis
+    # No host port mapping (VA security fix) — Redis has no auth of its own
+    # beyond the requirepass below, and only the backend service needs to
+    # reach it. It's reachable from other containers via the internal
+    # Compose network (service name "redis") without being published to
+    # the host at all.
+    volumes:
+      - redis_data:/data
+    command: ["redis-server", "--save", "60", "1", "--appendonly", "yes", "--requirepass", "${REDIS_PASSWORD:?REDIS_PASSWORD must be set in .env}"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:?REDIS_PASSWORD must be set in .env}", "--no-auth-warning", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
+  backend:
+    build: ./backend
+    container_name: technozis-backend
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      - REDIS_URL=redis://:${REDIS_PASSWORD:?REDIS_PASSWORD must be set in .env}@redis:6379/0
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        # NEXT_PUBLIC_API_URL removed (VA-C3 fix) — read by no source file,
+        # the frontend talks to the backend exclusively through
+        # app/api/[...path]/route.js's BACKEND_INTERNAL_URL below.
+        NEXT_PUBLIC_AGENT_NAME: ${AGENT_NAME:-Velu}
+        NEXT_PUBLIC_COMPANY_NAME: ${COMPANY_NAME:-Technozis}
+        NEXT_PUBLIC_APP_VERSION: ${APP_VERSION:-3.0.0}
+    container_name: technozis-frontend
+    ports:
+      - "3000:3000"
+    environment:
+      # Server-side only (app/api/[...path]/route.js) — the browser never
+      # sees these. BACKEND_INTERNAL_URL must be the Compose service name
+      # ("backend"), not "localhost", since the frontend and backend are
+      # separate containers on the Compose network. Both are plain runtime
+      # env vars (not NEXT_PUBLIC_*), so neither needs to be a build arg
+      # above — Next.js reads them fresh each time the container starts.
+      - BACKEND_INTERNAL_URL=http://backend:8000
+      - DASHBOARD_ADMIN_KEY=${DASHBOARD_ADMIN_KEY}
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+volumes:
+  redis_data:
